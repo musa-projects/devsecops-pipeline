@@ -1,0 +1,8 @@
+# INTENTIONALLY VULNERABLE VERSIONS — for pipeline demo
+# Trivy and pip-audit will flag CVEs in these:
+flask==2.0.1           # CVE-2023-30861
+requests==2.18.0       # CVE-2018-18074, CVE-2023-32681
+cryptography==3.2.0    # Multiple CVEs
+Werkzeug==2.0.0        # CVE-2023-46136
+Jinja2==2.11.2         # CVE-2020-28493
+gunicorn==20.0.4       # CVE-2024-1135

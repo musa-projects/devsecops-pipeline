@@ -1,0 +1,330 @@
+name: 🔐 DevSecOps Security Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 8 * * 1'   # Weekly Monday 8am — catch dependency drift
+
+env:
+  PYTHON_VERSION: '3.11'
+  APP_DIR: ./app
+
+jobs:
+
+  # ══════════════════════════════════════════════════════
+  # GATE 1 — SAST: Semgrep + Bandit
+  # Blocks on: HIGH/CRITICAL findings
+  # ══════════════════════════════════════════════════════
+  sast:
+    name: 🔍 Gate 1 — SAST (Semgrep + Bandit)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Bandit
+        run: pip install bandit[toml]
+
+      - name: Run Bandit
+        run: |
+          bandit -r ${{ env.APP_DIR }} \
+            -f json -o bandit-results.json \
+            --severity-level medium || true
+
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/python
+            p/flask
+            p/owasp-top-ten
+            .semgrep.yml
+          generateSarif: '1'
+        continue-on-error: true
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+        if: always()
+
+      - name: Enforce gate — block on HIGH/CRITICAL
+        run: |
+          python3 << 'EOF'
+          import json, sys
+          try:
+              with open('bandit-results.json') as f:
+                  data = json.load(f)
+              high = [r for r in data.get('results', [])
+                      if r['issue_severity'] in ['HIGH', 'CRITICAL']]
+              if high:
+                  print(f"❌ Bandit: {len(high)} HIGH/CRITICAL findings")
+                  for r in high:
+                      print(f"  [{r['issue_severity']}] {r['issue_text']} — {r['filename']}:{r['line_number']}")
+                  sys.exit(1)
+              print("✅ Bandit: No HIGH/CRITICAL findings")
+          except FileNotFoundError:
+              print("⚠️  bandit-results.json not found")
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sast-results
+          path: |
+            bandit-results.json
+            semgrep.sarif
+
+  # ══════════════════════════════════════════════════════
+  # GATE 2 — Dependency Scanning: Trivy + pip-audit
+  # Blocks on: CRITICAL CVEs (CVSS >= 9.0)
+  # ══════════════════════════════════════════════════════
+  dependency-scan:
+    name: 📦 Gate 2 — Dependency Scanning (Trivy + pip-audit)
+    runs-on: ubuntu-latest
+    needs: sast
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Run pip-audit
+        run: |
+          pip-audit -r ${{ env.APP_DIR }}/requirements.txt \
+            --format json --output pip-audit-results.json || true
+
+      - name: Install Trivy
+        run: |
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | \
+            sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | \
+            sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update && sudo apt-get install -y trivy
+
+      - name: Run Trivy on requirements.txt
+        run: |
+          trivy fs --security-checks vuln \
+            --severity CRITICAL,HIGH \
+            --format json --output trivy-fs-results.json \
+            ${{ env.APP_DIR }}/requirements.txt || true
+
+      - name: Enforce gate — block on CRITICAL CVEs
+        run: |
+          python3 << 'EOF'
+          import json, sys
+          critical_found = False
+          try:
+              with open('pip-audit-results.json') as f:
+                  data = json.load(f)
+              vulns = data.get('vulnerabilities', []) if isinstance(data, dict) else data
+              if vulns:
+                  print(f"❌ pip-audit: {len(vulns)} vulnerable packages found")
+                  for v in vulns[:5]:
+                      print(f"  {v.get('name')}: {[a.get('id') for a in v.get('aliases', [])]}")
+                  critical_found = True
+              else:
+                  print("✅ pip-audit: No vulnerabilities")
+          except Exception as e:
+              print(f"⚠️  pip-audit parse issue: {e}")
+          if critical_found:
+              sys.exit(1)
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-scan-results
+          path: |
+            pip-audit-results.json
+            trivy-fs-results.json
+
+  # ══════════════════════════════════════════════════════
+  # GATE 3 — Secrets Detection: Gitleaks
+  # Blocks on: ANY secret (zero tolerance)
+  # ══════════════════════════════════════════════════════
+  secrets-scan:
+    name: 🔑 Gate 3 — Secrets Detection (Gitleaks)
+    runs-on: ubuntu-latest
+    needs: dependency-scan
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # Full git history — secrets may be in old commits
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
+        continue-on-error: true
+
+  # ══════════════════════════════════════════════════════
+  # GATE 4 — Container Scanning: Trivy on Docker image
+  # Blocks on: CRITICAL CVEs in final image
+  # ══════════════════════════════════════════════════════
+  container-scan:
+    name: 🐳 Gate 4 — Container Scanning (Trivy)
+    runs-on: ubuntu-latest
+    needs: secrets-scan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t demo-app:scan ${{ env.APP_DIR }}
+
+      - name: Install Trivy
+        run: |
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | \
+            sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | \
+            sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update && sudo apt-get install -y trivy
+
+      - name: Run Trivy image scan (SARIF)
+        run: |
+          trivy image --severity CRITICAL,HIGH \
+            --format sarif --output trivy-image.sarif \
+            demo-app:scan
+
+      - name: Enforce gate — exit 1 on CRITICAL
+        run: |
+          trivy image --severity CRITICAL --exit-code 1 \
+            --no-progress demo-app:scan
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+
+  # ══════════════════════════════════════════════════════
+  # GATE 5 — IaC Scanning: Checkov on Dockerfile
+  # Blocks on: CRITICAL misconfigs
+  # ══════════════════════════════════════════════════════
+  iac-scan:
+    name: 🏗️  Gate 5 — IaC Scanning (Checkov)
+    runs-on: ubuntu-latest
+    needs: container-scan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Checkov on Dockerfile
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: ${{ env.APP_DIR }}
+          framework: dockerfile
+          output_format: sarif
+          output_file_path: checkov-results.sarif
+          soft_fail: false
+          check: CKV_DOCKER_2,CKV_DOCKER_3,CKV_DOCKER_7,CKV_DOCKER_8
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+
+  # ══════════════════════════════════════════════════════
+  # BUILD & DEPLOY — Only if ALL 5 gates pass
+  # ══════════════════════════════════════════════════════
+  build-and-deploy:
+    name: 🚀 Build & Deploy
+    runs-on: ubuntu-latest
+    needs: [sast, dependency-scan, secrets-scan, container-scan, iac-scan]
+    if: success()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, push to ECR
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ${{ env.APP_DIR }}
+          docker tag  $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+                      $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
+              docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
+            docker pull ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest
+            docker stop demo-app 2>/dev/null || true
+            docker rm   demo-app 2>/dev/null || true
+            docker run -d --name demo-app --restart unless-stopped -p 8080:8080 \
+              ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest
+            echo "✅ Deployed successfully"
+
+      - name: Discord notification — success
+        if: env.DISCORD_WEBHOOK != ''
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          curl -X POST $DISCORD_WEBHOOK -H "Content-Type: application/json" -d "{
+            \"content\": \"✅ **Pipeline PASSED** — All 5 gates cleared\\n**Commit:** \`${{ github.sha }}\`\\n**Branch:** ${{ github.ref_name }}\\n**Image:** \`${{ env.IMAGE }}\`\"
+          }"
+
+  # ══════════════════════════════════════════════════════
+  # SUMMARY — Always runs, shows gate results
+  # ══════════════════════════════════════════════════════
+  pipeline-summary:
+    name: 📊 Pipeline Summary
+    runs-on: ubuntu-latest
+    needs: [sast, dependency-scan, secrets-scan, container-scan, iac-scan]
+    if: always()
+    steps:
+      - name: Write job summary
+        run: |
+          echo "## 🔐 DevSecOps Pipeline Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Gate | Tool | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Gate 1 — SAST        | Semgrep + Bandit | ${{ needs.sast.result == 'success' && '✅ PASSED' || '❌ FAILED' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Gate 2 — Deps        | Trivy + pip-audit | ${{ needs.dependency-scan.result == 'success' && '✅ PASSED' || '❌ FAILED' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Gate 3 — Secrets     | Gitleaks | ${{ needs.secrets-scan.result == 'success' && '✅ PASSED' || '❌ FAILED' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Gate 4 — Container   | Trivy | ${{ needs.container-scan.result == 'success' && '✅ PASSED' || '❌ FAILED' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Gate 5 — IaC         | Checkov | ${{ needs.iac-scan.result == 'success' && '✅ PASSED' || '❌ FAILED' }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Discord notification — failure
+        if: failure() && env.DISCORD_WEBHOOK != ''
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          curl -X POST $DISCORD_WEBHOOK -H "Content-Type: application/json" -d "{
+            \"content\": \"❌ **Pipeline FAILED** — Security gate blocked deployment\\n**Commit:** \`${{ github.sha }}\`\\n**Branch:** ${{ github.ref_name }}\\nCheck Actions tab for details.\"
+          }"

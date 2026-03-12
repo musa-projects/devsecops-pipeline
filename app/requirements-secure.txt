@@ -1,0 +1,7 @@
+# SECURE — updated versions, no known critical CVEs
+flask==3.0.3
+requests==2.31.0
+cryptography==42.0.8
+Werkzeug==3.0.3
+Jinja2==3.1.4
+gunicorn==22.0.0

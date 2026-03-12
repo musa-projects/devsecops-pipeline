@@ -1,0 +1,45 @@
+[
+ {
+  "RuleID": "generic-api-key",
+  "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+  "StartLine": 12,
+  "EndLine": 12,
+  "StartColumn": 6,
+  "EndColumn": 32,
+  "Match": "API_KEY=sk-1234567890abcdef",
+  "Secret": "sk-1234567890abcdef",
+  "File": "app/Dockerfile",
+  "SymlinkFile": "",
+  "Commit": "",
+  "Entropy": 4.2479277,
+  "Author": "",
+  "Email": "",
+  "Date": "",
+  "Message": "",
+  "Tags": [],
+  "Fingerprint": "app/Dockerfile:generic-api-key:12"
+ },
+ {
+  "RuleID": "aws-secret-key-demo",
+  "Description": "Catches the intentional AWS secret key in demo app",
+  "StartLine": 20,
+  "EndLine": 20,
+  "StartColumn": 2,
+  "EndColumn": 60,
+  "Match": "AWS_SECRET_KEY = \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\"",
+  "Secret": "AWS_",
+  "File": "app/app.py",
+  "SymlinkFile": "",
+  "Commit": "",
+  "Entropy": 2,
+  "Author": "",
+  "Email": "",
+  "Date": "",
+  "Message": "",
+  "Tags": [
+   "aws",
+   "secret"
+  ],
+  "Fingerprint": "app/app.py:aws-secret-key-demo:20"
+ }
+]

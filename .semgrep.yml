@@ -1,0 +1,20 @@
+rules:
+  - id: sql-injection-string-concat
+    pattern: |
+      $QUERY = "..." + $VAR + "..."
+      $CURSOR.execute($QUERY)
+    message: "Potential SQL injection: string concatenation in query. Use parameterized queries."
+    languages: [python]
+    severity: ERROR
+
+  - id: eval-user-input
+    pattern: eval($X)
+    message: "Never use eval() with user-controlled input. Use ast.literal_eval() instead."
+    languages: [python]
+    severity: ERROR
+
+  - id: subprocess-shell-true
+    pattern: subprocess.run(..., shell=True, ...)
+    message: "shell=True with user input enables command injection. Pass args as a list."
+    languages: [python]
+    severity: WARNING
