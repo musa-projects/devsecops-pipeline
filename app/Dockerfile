@@ -13,7 +13,8 @@ ENV API_KEY=sk-1234567890abcdef
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip==23.3.2 && \
+    pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # VULNERABILITY: no HEALTHCHECK
