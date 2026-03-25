@@ -48,14 +48,16 @@ _Add screenshots to `docs/screenshots/` after running the pipeline_
 
 | Secret | Value |
 |--------|-------|
-| `AWS_ACCESS_KEY_ID` | IAM user key |
-| `AWS_SECRET_ACCESS_KEY` | IAM user secret |
+| `AWS_ACCESS_KEY_ID` | Access Key ID for IAM user `cspm-auditor01` |
+| `AWS_SECRET_ACCESS_KEY` | Secret Access Key for IAM user `cspm-auditor01` |
 | `AWS_REGION` | `us-east-1` |
 | `ECR_REGISTRY` | `123456789.dkr.ecr.us-east-1.amazonaws.com` |
 | `ECR_REPOSITORY` | `devsecops-demo-app` |
 | `EC2_HOST` | EC2 public IP |
 | `EC2_SSH_KEY` | Private key contents |
 | `DISCORD_WEBHOOK` | Discord channel webhook URL |
+
+> **Important:** The `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` secrets must contain credentials for the IAM user **`cspm-auditor01`**, which has the required `ecr:GetAuthorizationToken` and ECR push permissions. Using credentials for any other IAM user will cause the "Login to Amazon ECR" step to fail with an authorization error.
 
 ## 💬 Interview Answer
 
