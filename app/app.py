@@ -1,62 +1,65 @@
 """
-DevSecOps Demo Application
-INTENTIONALLY VULNERABLE — for pipeline demo purposes only
-
-Contains deliberate vulnerabilities so each security gate catches something:
-  - SQL injection via string concat   → Bandit + Semgrep (Gate 1)
-  - eval(user_input)                  → Semgrep (Gate 1)
-  - subprocess shell=True             → Bandit (Gate 1)
-  - Hardcoded AWS secret key          → Gitleaks (Gate 3)
-  - MD5 usage                         → Bandit (Gate 1)
+DevSecOps Demo Application — SECURE VERSION
+All vulnerabilities from app.py have been fixed.
+Use this version to show the pipeline passing all 5 gates.
 """
 from flask import Flask, request, jsonify
 import sqlite3
 import hashlib
+import ast
+import os
 import subprocess
 
 app = Flask(__name__)
 
-# VULNERABILITY 1: Hardcoded secret — Gitleaks will catch this
-AWS_SECRET_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-DB_PASSWORD = "super_secret_password_123"
+# FIX 1: No hardcoded secrets — use environment variables
+AWS_SECRET_KEY = os.environ.get('AWS_SECRET_KEY', '')
+DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
 
 
-# VULNERABILITY 2: SQL Injection — Semgrep/Bandit catches this
+# FIX 2: Parameterized query — no SQL injection
 @app.route('/user')
 def get_user():
     username = request.args.get('username', '')
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
-    query = "SELECT * FROM users WHERE username = '" + username + "'"
-    cursor.execute(query)
+    cursor.execute("SELECT id, username FROM users WHERE username = ?", (username,))
     results = cursor.fetchall()
     conn.close()
     return jsonify(results)
 
 
-# VULNERABILITY 3: eval() of user input — Semgrep catches this
+# FIX 3: ast.literal_eval — safe, only evaluates literals
 @app.route('/calculate')
 def calculate():
     expression = request.args.get('expr', '1+1')
-    result = eval(expression)
+    try:
+        result = ast.literal_eval(expression)
+        if not isinstance(result, (int, float)):
+            return jsonify({'error': 'Only numeric expressions allowed'}), 400
+    except (ValueError, SyntaxError):
+        return jsonify({'error': 'Invalid expression'}), 400
     return jsonify({'result': result})
 
 
-# VULNERABILITY 4: Insecure MD5 hash — Bandit catches this
+# FIX 4: SHA-256 instead of MD5
 @app.route('/hash')
 def hash_password():
     password = request.args.get('password', '')
-    hashed = hashlib.md5(password.encode()).hexdigest()
+    hashed = hashlib.sha256(password.encode()).hexdigest()
     return jsonify({'hash': hashed})
 
 
-# VULNERABILITY 5: Shell injection — Bandit catches this
+# FIX 5: No shell=True, validated input
 @app.route('/ping')
 def ping():
     host = request.args.get('host', 'localhost')
-    result = subprocess.run(f'ping -c 1 {host}', shell=True, capture_output=True)
+    if not host.replace('.', '').replace('-', '').isalnum():
+        return jsonify({'error': 'Invalid hostname'}), 400
+    result = subprocess.run(['ping', '-c', '1', host],
+                            capture_output=True, timeout=5)
     return jsonify({'output': result.stdout.decode()})
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    app.run(host='0.0.0.0', port=8080)
