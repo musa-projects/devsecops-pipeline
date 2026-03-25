@@ -5,7 +5,7 @@
 #   CKV_DOCKER_7  — latest tag (unpinned base image)
 #   CKV_DOCKER_8  — secrets in ENV vars
 
-FROM python:3.11-latest
+FROM python:3.11-slim
 
 # VULNERABILITY: secrets in ENV — Checkov catches this
 ENV DB_PASSWORD=super_secret_password_123
