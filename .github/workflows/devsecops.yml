@@ -277,20 +277,23 @@ jobs:
           echo "IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
 
       - name: Deploy to EC2
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ec2-user
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > /tmp/deploy_key.pem
+          chmod 600 /tmp/deploy_key.pem
+          ssh -i /tmp/deploy_key.pem \
+            -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=30 \
+            ec2-user@${{ secrets.EC2_HOST }} << 'ENDSSH'
             aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
               docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
             docker pull ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest
             docker stop demo-app 2>/dev/null || true
-            docker rm   demo-app 2>/dev/null || true
+            docker rm demo-app 2>/dev/null || true
             docker run -d --name demo-app --restart unless-stopped -p 8080:8080 \
               ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest
-            echo "✅ Deployed successfully"
+            echo "Deployed successfully"
+          ENDSSH
+          rm -f /tmp/deploy_key.pem
 
       - name: Discord notification — success
         if: env.DISCORD_WEBHOOK != ''
