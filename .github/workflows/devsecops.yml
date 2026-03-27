@@ -253,6 +253,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure AWS credentials
+        # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be credentials
+        # for IAM user cspm-auditor01, which has ecr:GetAuthorizationToken
+        # and ECR push permissions required for the steps below.
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
